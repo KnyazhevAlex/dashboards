@@ -126,62 +126,6 @@ else:
                         f"{lbl}: {count}</span>",
                         unsafe_allow_html=True
                     )
-
-    # === Уровень топлива ===
-    st.subheader("⛽ Уровень топлива по всем трекерам")
-    tracker_ids = [t.get("id") for t in trackers]
-    batch_data = gm.get_tracker_readings_batch(tracker_ids)
-
-    fuel_data = []
-    if "result" in batch_data:
-        for tracker_id, tracker_info in batch_data["result"].items():
-            tracker_id = int(tracker_id)
-            tracker_name = next((t["label"] for t in trackers if t["id"] == tracker_id), f"Трекер {tracker_id}")
-
-            for sensor in tracker_info.get("inputs", []):
-                if sensor.get("type") == "fuel":
-                    val = sensor.get("value", 0)
-                    min_val = sensor.get("min_value", 0)
-                    max_val = sensor.get("max_value", 100)
-                    fuel_data.append({
-                        "id": tracker_id,
-                        "name": tracker_name,
-                        "value": val,
-                        "min": min_val,
-                        "max": max_val
-                    })
-
-    if fuel_data:
-        total = len(fuel_data)
-        cols_per_row = 6
-        for start in range(0, total, cols_per_row):
-            end = min(start + cols_per_row, total)
-            row_items = fuel_data[start:end]
-            cols = st.columns(len(row_items))
-            for i, item in enumerate(row_items):
-                val = item["value"]
-                min_val = item["min"]
-                max_val = item["max"]
-                percent = (val - min_val) / (max_val - min_val) * 100 if max_val > min_val else 0
-                color_steps = [
-                    {"range": [0, 10], "color": "#E74C3C"},
-                    {"range": [10, 25], "color": "#F1C40F"},
-                    {"range": [25, 100], "color": "#2ECC71"},
-                ]
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=percent,
-                    number={'suffix': "%"},
-                    title={'text': f"{item['name']}<br>{val:.1f} л"},
-                    gauge={
-                        'axis': {'range': [0, 100]},
-                        'bar': {'color': "black", 'thickness': 0.3},
-                        'steps': color_steps,
-                        'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.8, 'value': percent}
-                    }
-                ))
-                fig.update_layout(margin=dict(t=70, b=20, l=10, r=10), height=280)
-                cols[i].plotly_chart(fig, use_container_width=True)
-    else:
         st.warning("Не удалось получить данные по топливу ни от одного трекера.")
+
 
