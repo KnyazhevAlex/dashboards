@@ -126,6 +126,3 @@ else:
                         f"{lbl}: {count}</span>",
                         unsafe_allow_html=True
                     )
-        st.warning("Не удалось получить данные по топливу ни от одного трекера.")
-
-
