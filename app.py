@@ -127,104 +127,6 @@ else:
                         unsafe_allow_html=True
                     )
 
-    # === Карточки статусов ===
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("🟢 В движении", counters.get("Едет", 0))
-    col2.metric("🟠 Стоит", counters.get("Стоит", 0))
-    col3.metric("🟡 Стоит с включенным зажиганием", counters.get("Холостой ход", 0))
-    col4.metric("⚪ Нет координат", counters.get("Нет координат", 0))
-    col5.metric("⚫ Не в сети", counters.get("Не в сети", 0))
-
-    # === Отладка ===
-    with st.expander("🧪 Отладка статусов (сырые данные по трекерам)"):
-        rows = []
-        states_map = states_response.get("states") or {}
-
-        for tid, s in states_map.items():
-            gps = (s or {}).get("gps") or {}
-            conn = (s or {}).get("connection") or {}
-            mov = (s or {}).get("movement") or {}
-            inputs = (s or {}).get("inputs") or []
-
-            try:
-                name = next((t["label"] for t in trackers if int(t["id"]) == int(tid)), f"Трекер {tid}")
-            except Exception:
-                name = f"Трекер {tid}"
-
-            updated_str = gps.get("updated")
-            age_min = None
-            if updated_str:
-                try:
-                    dt = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-                    age_min = (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
-                except Exception:
-                    age_min = None
-
-            ignition = None
-            if isinstance(inputs, list):
-                for i in inputs:
-                    if isinstance(i, dict) and i.get("type") == "ignition":
-                        ignition = bool(i.get("value"))
-                        break
-
-            computed_status = gm.get_tracker_status(s)
-            offline_rule = (not conn.get("online", True)) or (age_min is not None and age_min > 60)
-
-            rows.append({
-                "ID": int(tid) if str(tid).isdigit() else tid,
-                "Название": name,
-                "online": conn.get("online", None),
-                "updated": updated_str,
-                "age_min": None if age_min is None else round(age_min, 1),
-                "movement.status": mov.get("status"),
-                "speed": gps.get("speed"),
-                "ignition": ignition,
-                "computed_status": computed_status,
-                "offline_rule": offline_rule,
-            })
-
-        dbg_df = pd.DataFrame(rows)
-        if not dbg_df.empty:
-            st.dataframe(
-                dbg_df.sort_values(["offline_rule", "computed_status", "age_min"], ascending=[False, True, True]),
-                use_container_width=True
-            )
-
-    # === Таблица трекеров ===
-    simplified = []
-    for t in trackers:
-        src = t.get("source", {})
-        simplified.append({
-            "ID": t.get("id"),
-            "Название": t.get("label"),
-            "Модель": src.get("model"),
-            "IMEI / Device ID": src.get("device_id"),
-            "Телефон": src.get("phone"),
-            "Дата создания": t.get("creation_date"),
-            "Окончание тарифа": t.get("tariff_end_date"),
-            "Статус (заблокирован)": "Да" if src.get("blocked") else "Нет"
-        })
-
-    df = pd.DataFrame(simplified)
-    st.subheader("📄 Список трекеров")
-    st.dataframe(df, use_container_width=True)
-
-    # === Блок выбора трекера ===
-    selected = st.selectbox("Выберите трекер:", df["ID"])
-
-    # === Показания сенсоров ===
-    if st.button("📟 Показать текущие показания сенсоров"):
-        readings = gm.get_tracker_readings(selected)
-        st.subheader("Текущие показания сенсоров")
-
-        if "inputs" in readings and readings["inputs"]:
-            df_inputs = pd.DataFrame(readings["inputs"])
-            df_inputs = df_inputs[["label", "type", "value", "units_type", "update_time"]]
-            df_inputs.columns = ["Название", "Тип", "Значение", "Единицы", "Время обновления"]
-            st.dataframe(df_inputs)
-        else:
-            st.warning("⚠️ В ответе нет данных по сенсорам (inputs). Проверь, что устройство онлайн.")
-
     # === Уровень топлива ===
     st.subheader("⛽ Уровень топлива по всем трекерам")
     tracker_ids = [t.get("id") for t in trackers]
@@ -282,3 +184,4 @@ else:
                 cols[i].plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Не удалось получить данные по топливу ни от одного трекера.")
+
