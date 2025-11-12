@@ -19,7 +19,7 @@ if not api_key:
 st.markdown(
     """
     <h1 style='text-align: center; margin-top: -20px;'>
-        🚘 Обзор автопарка
+        Обзор автопарка
     </h1>
     """,
     unsafe_allow_html=True
@@ -136,5 +136,6 @@ else:
                         f"{lbl}: {count}</span>",
                         unsafe_allow_html=True
                     )
+
 
 
