@@ -27,7 +27,7 @@ else:
     trackers = data["list"]
 
     # === Блок: Автоматическая статистика по статусам ===
-    st.subheader("Статусы транспортных средств")
+    st.subheader("Текущее состояние автопарка")
 
     # Получаем ID всех трекеров
     tracker_ids = [int(t["id"]) for t in trackers]
@@ -126,3 +126,4 @@ else:
                         f"{lbl}: {count}</span>",
                         unsafe_allow_html=True
                     )
+
