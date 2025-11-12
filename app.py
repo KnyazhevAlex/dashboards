@@ -2,24 +2,16 @@ import streamlit as st
 import pandas as pd
 from gm_api import GMAPI
 
-# Настройки страницы
-st.set_page_config(page_title="GM API Dashboard", layout="wide")
-st.title("📊 GM API — Трекеры и сенсоры")
+# Получаем параметры из URL
+query_params = st.query_params
 
-# 1️⃣ Ввод API hash
-api_key = st.text_input("Введите ваш API hash", type="password")
+# Пробуем достать session_key из URL, например:
+api_key = query_params.get("session_key", [None])[0] if isinstance(query_params.get("session_key"), list) else query_params.get("session_key")
 
-# 2️⃣ Проверяем, что введён ключ
-if api_key:
-    gm = GMAPI(api_key)
-    
-    # === Блок 1: Получаем список трекеров ===
-    data = gm.get_trackers()
-
-    if "list" not in data:
-        st.error("Ответ API не содержит ключ 'list'")
-    else:
-        trackers = data["list"]
+if not api_key:
+    st.error("❌ В ссылке не найден параметр `session_key`. Добавьте его в URL, например: ?session_key=ВАШ_ХЕШ")
+else:
+    st.success("✅ API ключ успешно получен из URL")
 
                 # === Блок: Автоматическая статистика по статусам ===
         st.subheader("Статусы транспортных средств")
@@ -338,4 +330,5 @@ if api_key:
 
                 cols[i].plotly_chart(fig, use_container_width=True)
     else:
+
         st.warning("Не удалось получить данные по топливу ни от одного трекера.")
