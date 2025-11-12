@@ -15,6 +15,16 @@ if not api_key:
     st.error("❌ В ссылке не найден параметр `session_key`. Добавьте его в URL, например: ?session_key=ВАШ_ХЕШ")
     st.stop()
 
+# === Центральный заголовок ===
+st.markdown(
+    """
+    <h1 style='text-align: center; margin-top: -20px;'>
+        🚘 Обзор автопарка
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
+
 # === Подключаемся к API ===
 gm = GMAPI(api_key)
 
@@ -126,4 +136,5 @@ else:
                         f"{lbl}: {count}</span>",
                         unsafe_allow_html=True
                     )
+
 
