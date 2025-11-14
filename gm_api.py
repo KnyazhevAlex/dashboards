@@ -94,3 +94,11 @@ class GMAPI:
 
         # --- fallback ---
         return "Не в сети"
+    
+    def get_employees(self):
+        """Получаем список сотрудников / водителей"""
+        url = f"{self.base_url}/employee/list"
+        params = {"hash": self.api_key}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
