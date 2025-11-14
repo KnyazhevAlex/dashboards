@@ -2,7 +2,62 @@ import streamlit as st
 import pandas as pd
 from gm_api import GMAPI
 import plotly.graph_objects as go
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+def section_title(text, top_offset=-10):
+    #Разметка заголовков
+    st.markdown(
+        f"""
+        <div style='margin-top:{top_offset}px; margin-bottom:10px;'>
+            <h3 style="margin: 0; text-align:center; font-weight:600;">{text}</h3>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def draw_status_card(title, stats):
+ 
+    st.markdown(
+        f"""
+        <div style='font-size:17px; line-height: 1.6; margin-left:5px;'>
+            <span style='margin-right:6px;'>✅</span> <b>В порядке:</b> {stats['ok']}<br>
+            <span style='margin-right:6px;'>⚠️</span> <b>Скоро истекает:</b> {stats['expiring']}<br>
+            <span style='margin-right:6px;'>❌</span> <b>Просрочено:</b> {stats['expired']}<br>
+            <span style='margin-right:6px;'>🟪</span> <b>Не заполнено:</b> {stats['empty']}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def process_driver_licenses(employees):
+    today = datetime.now().date()
+    soon_limit = today + timedelta(days=30)
+
+    stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
+
+    for emp in employees:
+        valid_till = emp.get("driver_license_valid_till")
+
+        if not valid_till:
+            stats["empty"] += 1
+            continue
+
+        try:
+            dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
+        except:
+            stats["empty"] += 1
+            continue
+
+        if dt < today:
+            stats["expired"] += 1
+        elif today <= dt < soon_limit:
+            stats["expiring"] += 1
+        else:
+            stats["ok"] += 1
+
+    return stats
 
 # === Настройки страницы ===
 st.set_page_config(page_title="GM API Dashboard", layout="wide")
@@ -12,7 +67,7 @@ query_params = st.query_params
 api_key = query_params.get("session_key", [None])[0] if isinstance(query_params.get("session_key"), list) else query_params.get("session_key")
 
 if not api_key:
-    st.error("❌ В ссылке не найден параметр `session_key`. Добавьте его в URL, например: ?session_key=ВАШ_ХЕШ")
+    st.error("❌ В ссылке не найден параметр `session_key`. Добавьте его в URL, например: ?session_key=hash")
     st.stop()
 
 # === Центральный заголовок ===
@@ -37,12 +92,6 @@ else:
     trackers = data["list"]
 
     # === Блок: Автоматическая статистика по статусам ===
-    #st.subheader("Текущее состояние автопарка")
-    st.markdown(
-    "<h3 style='margin-top:10px;'>Текущее состояние автопарка</h3>",
-    unsafe_allow_html=True
-    )
-
     # Получаем ID всех трекеров
     tracker_ids = [int(t["id"]) for t in trackers]
 
@@ -116,7 +165,7 @@ else:
         fig.update_layout(
             showlegend=False,
             margin=dict(t=20, b=10, l=10, r=10),
-            height=420,
+            height=320,
             annotations=[dict(
                 text=f"Всего<br><b>{total}</b>",
                 x=0.5, y=0.5,
@@ -125,22 +174,35 @@ else:
             )]
         )
 
-        outer_left, outer_right = st.columns([1, 1])
-        with outer_left:
-            pie_col, legend_col = st.columns([2, 1])
-            with pie_col:
-                st.plotly_chart(fig, use_container_width=True)
-            with legend_col:
-                for lbl in status_colors:
-                    color = status_colors[lbl]
-                    count = counters.get(lbl, 0)
-                    st.markdown(
-                        f"<span style='display:flex;align-items:center'>"
-                        f"<div style='width:14px;height:14px;background:{color};margin-right:8px;border-radius:3px'></div> "
-                        f"{lbl}: {count}</span>",
-                        unsafe_allow_html=True
-                    )
+        col_left, col_center, col_right = st.columns([1, 1, 1], border=True)
+        with col_left:
+                section_title("Текущее состояние автопарка")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+        with col_center:
+            # === Водительские удостоверения ===
+            section_title("Водительские удостоверения")
+            try:
+                employees = gm.get_employees().get("list", [])
+            except Exception as e:
+                st.error(f"Ошибка при загрузке сотрудников: {e}")
+                employees = []
+            # --- Если водителей нет ---
+            if not employees:
+                st.markdown("""
+                    <div style="
+                        padding: 15px 20px;
+                        border-radius: 10px;
+                        background: #ffffff;
+                        border: 1px solid #ddd;
+                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
+                        font-size: 17px;">
+                        ⚠️ Данные отсутствуют — заполните раздел «Водители»
+                    </div>
+                """, unsafe_allow_html=True)
 
-
-
+            else:
+                vu_stats = process_driver_licenses(employees)
+                draw_status_card("Водительские удостоверения", vu_stats)
+        with col_right:
+            section_title("Страховка")
