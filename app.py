@@ -32,6 +32,7 @@ def draw_status_card(title, stats):
     st.markdown("</div>", unsafe_allow_html=True)
 
 def process_driver_licenses(employees):
+
     today = datetime.now().date()
     soon_limit = today + timedelta(days=30)
 
@@ -58,6 +59,39 @@ def process_driver_licenses(employees):
             stats["ok"] += 1
 
     return stats
+
+def process_insurance(vehicles):
+    today = datetime.now().date()
+    soon_limit = today + timedelta(days=30)
+
+    stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
+
+    for v in vehicles:
+        osago = v.get("liability_insurance_valid_till")
+        kasko = v.get("free_insurance_valid_till")
+
+        # --- ОСАГО в приоритете ---
+        valid_till = osago or kasko
+
+        if not valid_till:
+            stats["empty"] += 1
+            continue
+
+        try:
+            dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
+        except:
+            stats["empty"] += 1
+            continue
+
+        if dt < today:
+            stats["expired"] += 1
+        elif today <= dt < soon_limit:
+            stats["expiring"] += 1
+        else:
+            stats["ok"] += 1
+
+    return stats
+
 
 # === Настройки страницы ===
 st.set_page_config(page_title="GM API Dashboard", layout="wide")
@@ -206,3 +240,26 @@ else:
                 draw_status_card("Водительские удостоверения", vu_stats)
         with col_right:
             section_title("Страховка")
+
+            try:
+                vehicles = gm.get_vehicles().get("list", [])
+            except Exception as e:
+                st.error(f"Ошибка при загрузке транспорта: {e}")
+                vehicles = []
+
+            if not vehicles:
+                st.markdown("""
+                    <div style="
+                        padding: 15px 20px;
+                        border-radius: 10px;
+                        background: #ffffff;
+                        border: 1px solid #ddd;
+                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
+                        font-size: 17px;">
+                        ⚠️ Данные отсутствуют — заполните раздел «Автомобили»
+                    </div>
+                """, unsafe_allow_html=True)
+
+            else:
+                insurance_stats = process_insurance(vehicles)
+                draw_status_card("Страховка", insurance_stats)
