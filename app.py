@@ -15,21 +15,32 @@ def section_title(text, top_offset=-10):
         unsafe_allow_html=True
     )
 
-def draw_status_card(title, stats):
- 
-    st.markdown(
-        f"""
-        <div style='font-size:17px; line-height: 1.6; margin-left:5px;'>
-            <span style='margin-right:6px;'>✅</span> <b>В порядке:</b> {stats['ok']}<br>
-            <span style='margin-right:6px;'>⚠️</span> <b>Скоро истекает:</b> {stats['expiring']}<br>
-            <span style='margin-right:6px;'>❌</span> <b>Просрочено:</b> {stats['expired']}<br>
-            <span style='margin-right:6px;'>🟪</span> <b>Не заполнено:</b> {stats['empty']}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+def draw_status_card(stats, details):
+    
+    rows = [
+        ("✅", "В порядке", "ok"),
+        ("⚠️", "Скоро истекает", "expiring"),
+        ("❌", "Просрочено", "expired"),
+        ("🟪", "Не заполнено", "empty"),
+    ]
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    for emoji, label, key in rows:
+        col_text, col_num, col_info = st.columns([3, 1, 1])
+
+        with col_text:
+            st.markdown(f"{emoji} **{label}:**")
+
+        with col_num:
+            st.markdown(f"**{stats[key]}**")
+
+        # popover со списками
+        with col_info:
+            if key != "ok" and details[key]:
+                with st.popover("ℹ️"):
+                    for item in details[key]:
+                        st.markdown(f"• {item}")
+            else:
+                st.markdown("<div class='status-row'></div>", unsafe_allow_html=True)
 
 def process_driver_licenses(employees):
 
@@ -37,60 +48,75 @@ def process_driver_licenses(employees):
     soon_limit = today + timedelta(days=30)
 
     stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
+    details = {"ok": [], "expiring": [], "expired": [], "empty": []}
 
     for emp in employees:
+        name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
         valid_till = emp.get("driver_license_valid_till")
 
         if not valid_till:
             stats["empty"] += 1
+            details["empty"].append(name)
             continue
 
         try:
             dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
         except:
             stats["empty"] += 1
+            details["empty"].append(name)
             continue
 
         if dt < today:
             stats["expired"] += 1
+            details["expired"].append(name)
         elif today <= dt < soon_limit:
             stats["expiring"] += 1
+            details["expiring"].append(name)
         else:
             stats["ok"] += 1
+            details["ok"].append(name)
 
-    return stats
+    return stats, details
 
 def process_insurance(vehicles):
     today = datetime.now().date()
     soon_limit = today + timedelta(days=30)
 
     stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
+    details = {"ok": [], "expiring": [], "expired": [], "empty": []}
 
     for v in vehicles:
+        name = v.get("label", "Без названия")
+        reg = v.get("reg_number", "")
+        item = f"{name} — {reg}" if reg else name
+
         osago = v.get("liability_insurance_valid_till")
         kasko = v.get("free_insurance_valid_till")
-
-        # --- ОСАГО в приоритете ---
         valid_till = osago or kasko
 
         if not valid_till:
             stats["empty"] += 1
+            details["empty"].append(item)
             continue
 
         try:
             dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
         except:
             stats["empty"] += 1
+            details["empty"].append(item)
             continue
 
         if dt < today:
             stats["expired"] += 1
+            details["expired"].append(item)
         elif today <= dt < soon_limit:
             stats["expiring"] += 1
+            details["expiring"].append(item)
         else:
             stats["ok"] += 1
+            details["ok"].append(item)
 
-    return stats
+    return stats, details
 
 
 # === Настройки страницы ===
@@ -236,8 +262,8 @@ else:
                 """, unsafe_allow_html=True)
 
             else:
-                vu_stats = process_driver_licenses(employees)
-                draw_status_card("Водительские удостоверения", vu_stats)
+                vu_stats, vu_details = process_driver_licenses(employees)
+                draw_status_card(vu_stats, vu_details)
         with col_right:
             section_title("Страховка")
 
@@ -261,5 +287,6 @@ else:
                 """, unsafe_allow_html=True)
 
             else:
-                insurance_stats = process_insurance(vehicles)
-                draw_status_card("Страховка", insurance_stats)
+                insurance_stats, insurance_details = process_insurance(vehicles)
+                draw_status_card(insurance_stats, insurance_details)
+
