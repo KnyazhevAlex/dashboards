@@ -1,291 +1,125 @@
-import streamlit as st
-import pandas as pd
-from gm_api import GMAPI
-import plotly.graph_objects as go
-from datetime import datetime, timezone, timedelta
+import requests
+from datetime import datetime, timedelta
 
-def section_title(text, top_offset=-10):
-    #Разметка заголовков
-    st.markdown(
-        f"""
-        <div style='margin-top:{top_offset}px; margin-bottom:10px;'>
-            <h3 style="margin: 0; text-align:center; font-weight:600;">{text}</h3>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+class GMAPI:
+    def __init__(self, api_key: str):
+        self.base_url = "https://my.gdemoi.ru/api-v2"
+        self.api_key = api_key
 
-def draw_status_card(stats, details):
+    def get_trackers(self):
+        """Получаем список трекеров пользователя"""
+        url = f"{self.base_url}/tracker/list"
+        params = {"hash": self.api_key}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
     
-    rows = [
-        ("✅", "В порядке", "ok"),
-        ("⚠️", "Скоро истекает", "expiring"),
-        ("❌", "Просрочено", "expired"),
-        ("🟪", "Не заполнено", "empty"),
-    ]
-
-    for emoji, label, key in rows:
-        col_text, col_num, col_info = st.columns([3, 1, 1])
-
-        with col_text:
-            st.markdown(f"{emoji} **{label}:**")
-
-        with col_num:
-            st.markdown(f"**{stats[key]}**")
-
-        # popover со списками
-        with col_info:
-            if key != "ok" and details[key]:
-                with st.popover("ℹ️"):
-                    for item in details[key]:
-                        st.markdown(f"• {item}")
-            else:
-                st.markdown("<div class='status-row'></div>", unsafe_allow_html=True)
-
-def process_driver_licenses(employees):
-
-    today = datetime.now().date()
-    soon_limit = today + timedelta(days=30)
-
-    stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
-    details = {"ok": [], "expiring": [], "expired": [], "empty": []}
-
-    for emp in employees:
-        name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
-        valid_till = emp.get("driver_license_valid_till")
-
-        if not valid_till:
-            stats["empty"] += 1
-            details["empty"].append(name)
-            continue
-
-        try:
-            dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
-        except:
-            stats["empty"] += 1
-            details["empty"].append(name)
-            continue
-
-        if dt < today:
-            stats["expired"] += 1
-            details["expired"].append(name)
-        elif today <= dt < soon_limit:
-            stats["expiring"] += 1
-            details["expiring"].append(name)
-        else:
-            stats["ok"] += 1
-            details["ok"].append(name)
-
-    return stats, details
-
-def process_insurance(vehicles):
-    today = datetime.now().date()
-    soon_limit = today + timedelta(days=30)
-
-    stats = {"ok": 0, "expiring": 0, "expired": 0, "empty": 0}
-    details = {"ok": [], "expiring": [], "expired": [], "empty": []}
-
-    for v in vehicles:
-        name = v.get("label", "Без названия")
-        reg = v.get("reg_number", "")
-        item = f"{name} — {reg}" if reg else name
-
-        osago = v.get("liability_insurance_valid_till")
-        kasko = v.get("free_insurance_valid_till")
-        valid_till = osago or kasko
-
-        if not valid_till:
-            stats["empty"] += 1
-            details["empty"].append(item)
-            continue
-
-        try:
-            dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
-        except:
-            stats["empty"] += 1
-            details["empty"].append(item)
-            continue
-
-        if dt < today:
-            stats["expired"] += 1
-            details["expired"].append(item)
-        elif today <= dt < soon_limit:
-            stats["expiring"] += 1
-            details["expiring"].append(item)
-        else:
-            stats["ok"] += 1
-            details["ok"].append(item)
-
-    return stats, details
-
-
-# === Настройки страницы ===
-st.set_page_config(page_title="GM API Dashboard", layout="wide")
-
-# === Получаем API ключ из URL ===
-query_params = st.query_params
-api_key = query_params.get("session_key", [None])[0] if isinstance(query_params.get("session_key"), list) else query_params.get("session_key")
-
-if not api_key:
-    st.error("❌ В ссылке не найден параметр `session_key`. Добавьте его в URL, например: ?session_key=hash")
-    st.stop()
-
-# === Центральный заголовок ===
-st.markdown(
-    """
-    <h1 style='text-align: center; margin-top: -20px;'>
-        Обзор автопарка
-    </h1>
-    """,
-    unsafe_allow_html=True
-)
-
-# === Подключаемся к API ===
-gm = GMAPI(api_key)
-
-# === Получаем список трекеров ===
-data = gm.get_trackers()
-
-if "list" not in data:
-    st.error("Ответ API не содержит ключ 'list'")
-else:
-    trackers = data["list"]
-
-    # === Блок: Автоматическая статистика по статусам ===
-    # Получаем ID всех трекеров
-    tracker_ids = [int(t["id"]) for t in trackers]
-
-    # Получаем их текущее состояние через API
-    try:
-        states_response = gm.get_states(tracker_ids, list_blocked=True, allow_not_exist=True)
-        states = states_response.get("states", {})
-    except Exception as e:
-        st.error(f"Ошибка при получении состояний трекеров: {e}")
-        states_response = {}
-        states = {}
-
-    # Инициализация счётчиков (канонические статусы)
-    counters = {
-        "Едет": 0,
-        "Стоит": 0,
-        "Холостой ход": 0,
-        "Нет координат": 0,
-        "Не в сети": 0
-    }
-
-    # Нормализация вариантов статусов
-    status_norm_map = {
-        "В движении": "Едет",
-        "Едет": "Едет",
-        "Стоит": "Стоит",
-        "Стоит с включенным зажиганием": "Холостой ход",
-        "Холостой ход": "Холостой ход",
-        "Нет координат": "Нет координат",
-        "Не в сети": "Не в сети",
-    }
-
-    # Перебираем все состояния
-    for tid, state in states.items():
-        raw_status = gm.get_tracker_status(state)
-        canon = status_norm_map.get(raw_status, raw_status)
-        counters[canon] = counters.get(canon, 0) + 1
-
-    # === Визуализация пирога ===
-    labels, values = [], []
-    for k, v in counters.items():
-        if v > 0:
-            labels.append(k)
-            values.append(v)
-
-    if not values:
-        st.info("Нет данных по статусам устройств для отображения диаграммы.")
-    else:
-        status_colors = {
-            "Едет": "#3CB371",
-            "Стоит": "#1E90FF",
-            "Холостой ход": "#FFD966",
-            "Нет координат": "#A9A9A9",
-            "Не в сети": "#E74C3C"
+    def get_tracker_readings(self, tracker_id: int):
+        """Получает показания сенсоров по определенному трекеру"""
+        url = f"{self.base_url}/tracker/readings/list"
+        params = {"hash": self.api_key, "tracker_id": tracker_id}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    def get_tracker_readings_batch(self, tracker_ids: list[int]):
+        """Получает показания сенсоров сразу по нескольким трекерам"""
+        url = f"{self.base_url}/tracker/readings/batch_list"
+        payload = {"hash": self.api_key, "tracker_ids": tracker_ids}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        return response.json()
+    
+    def get_sensor_data(self, tracker_id: int, sensor_id: int, from_ts: str, to_ts: str, raw_data: bool=False):
+        """Исторические данные датчиков - сырые данные"""
+        url = f"{self.base_url}/tracker/sensor/data/read"
+        params = {
+        "hash": self.api_key,
+        "tracker_id": tracker_id,
+        "sensor_id": sensor_id,
+        "from": from_ts,
+        "to": to_ts,
+        "raw_data": str(raw_data).lower()
         }
-        colors = [status_colors.get(lbl, "#CCCCCC") for lbl in labels]
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    def get_states(self, tracker_ids: list[int], list_blocked: bool=False, allow_not_exist: bool=False):
+        """Текущее состояние нескольких трекеров"""
+        url = f"{self.base_url}/tracker/get_states"
+        payload = {
+            "hash": self.api_key,
+            "trackers": tracker_ids,
+            "list_blocked": list_blocked,
+            "allow_not_exist": allow_not_exist
+        }
+        r = requests.post(url, json=payload, timeout=30)
+        r.raise_for_status()
+        return r.json()
 
-        fig = go.Figure(go.Pie(
-            labels=labels,
-            values=values,
-            hole=0.55,
-            marker=dict(colors=colors),
-            sort=False,
-            textinfo='percent',
-            hoverinfo='label+value+percent',
-            hovertemplate='%{label}: %{value} устройств (%{percent})<extra></extra>'
-        ))
+    def get_tracker_status(self, state_obj):
+        """
+        Определяет статус трекера по финальной логике:
+        - В движении: connection_status=active и movement_status ∈ [moving, stopped]
+        - Стоит: connection_status=active и movement_status=parked и ignition=False
+        - Стоит с включенным зажиганием: connection_status=active и movement_status=parked и ignition=True
+        - Нет координат: connection_status=idle
+        - Не в сети: connection_status ∈ [offline, signal_lost, just_registered, just_replaced] или данных нет
+        """
+        if not state_obj:
+            return "Не в сети"
 
-        total = sum(values)
-        fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
-        fig.update_layout(
-            showlegend=False,
-            margin=dict(t=20, b=10, l=10, r=10),
-            height=320,
-            annotations=[dict(
-                text=f"Всего<br><b>{total}</b>",
-                x=0.5, y=0.5,
-                font=dict(size=20, color='#333'),
-                showarrow=False
-            )]
-        )
+        s = state_obj.get("state", state_obj)
+        conn = (s.get("connection_status") or "").lower()
+        move = (s.get("movement_status") or "").lower()
+        ignition = s.get("ignition", False)
 
-        col_left, col_center, col_right = st.columns([1, 1, 1], border=True)
-        with col_left:
-                section_title("Текущее состояние автопарка")
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        # --- Не в сети ---
+        offline_statuses = {"offline", "signal_lost", "just_registered", "just_replaced"}
+        if conn in offline_statuses or not conn:
+            return "Не в сети"
 
-        with col_center:
-            # === Водительские удостоверения ===
-            section_title("Водительские удостоверения")
-            try:
-                employees = gm.get_employees().get("list", [])
-            except Exception as e:
-                st.error(f"Ошибка при загрузке сотрудников: {e}")
-                employees = []
-            # --- Если водителей нет ---
-            if not employees:
-                st.markdown("""
-                    <div style="
-                        padding: 15px 20px;
-                        border-radius: 10px;
-                        background: #ffffff;
-                        border: 1px solid #ddd;
-                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
-                        font-size: 17px;">
-                        ⚠️ Данные отсутствуют — заполните раздел «Водители»
-                    </div>
-                """, unsafe_allow_html=True)
+        # --- Нет координат ---
+        if conn == "idle":
+            return "Нет координат"
 
-            else:
-                vu_stats, vu_details = process_driver_licenses(employees)
-                draw_status_card(vu_stats, vu_details)
-        with col_right:
-            section_title("Страховка")
+        # --- Стоит / Стоит с включенным зажиганием ---
+        if conn == "active" and move == "parked":
+            return "Стоит с включенным зажиганием" if ignition else "Стоит"
 
-            try:
-                vehicles = gm.get_vehicles().get("list", [])
-            except Exception as e:
-                st.error(f"Ошибка при загрузке транспорта: {e}")
-                vehicles = []
+        # --- В движении ---
+        if conn == "active" and move in ("moving", "stopped"):
+            return "В движении"
 
-            if not vehicles:
-                st.markdown("""
-                    <div style="
-                        padding: 15px 20px;
-                        border-radius: 10px;
-                        background: #ffffff;
-                        border: 1px solid #ddd;
-                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
-                        font-size: 17px;">
-                        ⚠️ Данные отсутствуют — заполните раздел «Автомобили»
-                    </div>
-                """, unsafe_allow_html=True)
+        # --- fallback ---
+        return "Не в сети"
+    
+    def get_employees(self):
+        """Получаем список сотрудников / водителей"""
+        url = f"{self.base_url}/employee/list"
+        params = {"hash": self.api_key}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    def get_vehicles(self):
+        """Получаем список ТС для ОСАГО/КАСКО"""
+        url = f"{self.base_url}/vehicle/list"
+        params = {"hash": self.api_key}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
 
-            else:
-                insurance_stats, insurance_details = process_insurance(vehicles)
-                draw_status_card(insurance_stats, insurance_details)
+    def get_trips(self, tracker_id: int, from_ts: int, to_ts: int):
+        """Поездки трекера за период (from / to — UNIX timestamp)"""
+        url = f"{self.base_url}/tracker/trips"
+        params = {
+            "hash": self.api_key,
+            "tracker_id": tracker_id,
+            "from": from_ts,
+            "to": to_ts
+        }
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json()
