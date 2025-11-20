@@ -367,7 +367,7 @@ else:
 
 # === ЗАГРУЗКА ПОЕЗДОК С ИНДИКАЦИЕЙ ===
 # Используем st.status для красивого отображения процесса
-'''
+
 with st.status(f"Загрузка истории поездок ({len(active_tracker_ids)} из {len(tracker_ids)} активных)...", expanded=True) as status:
     st.write("Подключение к API...")
     # Загружаем данные (Кэшировано!)
@@ -378,7 +378,7 @@ with st.status(f"Загрузка истории поездок ({len(active_tra
         status.update(label="Ошибка загрузки данных!", state="error")
         st.error(f"Не удалось получить данные о поездках: {e}")
         st.stop()
-'''
+
 # --- Обработка данных (быстро, в памяти) ---
 yesterday_str = yesterday.strftime("%Y-%m-%d")
 day_before_str = day_before.strftime("%Y-%m-%d")
@@ -508,6 +508,7 @@ with metrics_container:
                 <div style="font-size:30px; font-weight:600;">{idle_time_fmt}</div>
             </div>
         """, unsafe_allow_html=True)
+
 
 
 
