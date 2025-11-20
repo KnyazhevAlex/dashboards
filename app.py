@@ -480,7 +480,7 @@ with metrics_container:
         section_title("Активность за период")
         st.markdown(f"""
             <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                <div style="font-size:17px; color:#444;">Активных ТС</div>
+                <div style="font-size:17px; color:#444;">Активных ТС (вчера)</div>
                 <div style="font-size:30px; font-weight:600;">{active_count} / {len(trackers)}</div>
                 <div style="font-size:14px; color:{trend_color}; margin-top:8px;">{trend}</div>
             </div>
@@ -507,4 +507,5 @@ with metrics_container:
                 <div style="font-size:30px; font-weight:600;">{idle_time_fmt}</div>
             </div>
         """, unsafe_allow_html=True)
+
 
