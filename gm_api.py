@@ -163,3 +163,77 @@ class GMAPI:
 
         return results
 
+    # === Работа с отчетами (Fuel) ===
+
+    def generate_fuel_report(self, tracker_ids: list[int], from_dt: str, to_dt: str):
+        """
+        Инициирует создание отчета по топливу.
+        from_dt, to_dt: строки формата "YYYY-MM-DD HH:MM:SS"
+        """
+        url = f"{self.base_url}/report/tracker/generate"
+        
+        # Параметры плагина (на основе примера пользователя)
+        plugin_params = {
+            "show_seconds": False,
+            "plugin_id": 10, # Отчет по расходу топлива
+            "graph_type": "mileage",
+            "detailed_by_dates": True,
+            "include_summary_sheet": True,
+            "include_summary_sheet_only": True, # Нам нужны только итоги
+            "use_ignition_data_for_consumption": True,
+            "include_mileage_plot": False,
+            "filter": True,
+            "include_speed_plot": False,
+            "smoothing": True,
+            "surge_filter": True,
+            "surge_filter_threshold": 0.01,
+            "speed_filter": False,
+            "speed_filter_threshold": 10
+        }
+
+        # Фильтр по времени (весь день)
+        time_filter = {
+            "from": "00:00:00",
+            "to": "23:59:59",
+            "weekdays": [1, 2, 3, 4, 5, 6, 7]
+        }
+
+        payload = {
+            "hash": self.api_key,
+            "title": "Fuel Report",
+            "trackers": tracker_ids,
+            "from": from_dt,
+            "to": to_dt,
+            "time_filter": time_filter,
+            "plugin": plugin_params,
+            "locale": "ru"
+        }
+
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def get_report_status(self, report_id: int):
+        """Проверяет готовность отчета"""
+        url = f"{self.base_url}/report/tracker/status"
+        params = {
+            "hash": self.api_key,
+            "report_id": report_id,
+            "locale": "ru"
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def retrieve_report(self, report_id: int):
+        """Скачивает готовый отчет"""
+        url = f"{self.base_url}/report/tracker/retrieve"
+        params = {
+            "hash": self.api_key,
+            "report_id": report_id
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+
+
