@@ -302,8 +302,6 @@ with col_right:
 
 
 # === БЛОК 2: Тяжелые данные (Поездки) ===
-st.markdown("<hr style='margin-top:40px;margin-bottom:25px;'>", unsafe_allow_html=True)
-
 # Контейнер для метрик, чтобы они появились после загрузки
 metrics_container = st.container()
 
@@ -509,3 +507,4 @@ with metrics_container:
                 <div style="font-size:30px; font-weight:600;">{idle_time_fmt}</div>
             </div>
         """, unsafe_allow_html=True)
+
