@@ -1,5 +1,12 @@
 import requests
 from datetime import datetime, timedelta
+import time
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class GMAPI:
     def __init__(self, api_key: str):
@@ -111,15 +118,48 @@ class GMAPI:
         response.raise_for_status()
         return response.json()
 
-    def get_trips(self, tracker_id: int, from_ts: int, to_ts: int):
-        """Поездки трекера за период (from / to — UNIX timestamp)"""
-        url = f"{self.base_url}/tracker/trips"
-        params = {
+    def get_trips(self, tracker_id: int, from_dt: str, to_dt: str):
+        """Поездки трекера за период (POST /track/list)"""
+        url = f"{self.base_url}/track/list"
+        payload = {
             "hash": self.api_key,
             "tracker_id": tracker_id,
-            "from": from_ts,
-            "to": to_ts
+            "from": from_dt,
+            "to": to_dt,
+            "filter": False,
+            "count_events": True
         }
-        response = requests.get(url, params=params, timeout=30)
+        # Используем POST и json=payload
+        response = requests.post(url, json=payload, timeout=30)
         response.raise_for_status()
         return response.json()
+    
+    
+
+    def get_trips_parallel(self, tracker_ids: list[int], from_dt: str, to_dt: str, max_workers: int = 25):
+        """
+        Параллельное получение поездок по трекерам.
+        Возвращает список словарей: { "id": tracker_id, "trips": [...], "error": str|None }
+        """
+        results = []
+
+        def fetch_one(tid):
+            # Простая логика повторных попыток (retries)
+            attempts = 3
+            for attempt in range(attempts):
+                try:
+                    data = self.get_trips(tid, from_dt, to_dt)
+                    return {"id": tid, "trips": data.get("list", []), "error": None}
+                except Exception as e:
+                    if attempt == attempts - 1:
+                        logger.error(f"Failed to fetch trips for tracker {tid}: {e}")
+                        return {"id": tid, "trips": [], "error": str(e)}
+                    time.sleep(1) # Пауза перед повтором
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_id = {executor.submit(fetch_one, tid): tid for tid in tracker_ids}
+            for future in as_completed(future_to_id):
+                results.append(future.result())
+
+        return results
+
