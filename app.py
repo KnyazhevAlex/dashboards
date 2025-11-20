@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 from gm_api import GMAPI
 import plotly.graph_objects as go
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import time
 
 def section_title(text, top_offset=-10):
     #Разметка заголовков
@@ -42,8 +44,34 @@ def draw_status_card(stats, details):
             else:
                 st.markdown("<div class='status-row'></div>", unsafe_allow_html=True)
 
-def process_driver_licenses(employees):
+# === Кэшируемые функции загрузки данных ===
 
+# @st.cache_data(ttl=300, show_spinner=False)
+def load_trackers(api_key):
+    gm = GMAPI(api_key)
+    return gm.get_trackers()
+
+# @st.cache_data(ttl=300, show_spinner=False)
+def load_states(api_key, tracker_ids):
+    gm = GMAPI(api_key)
+    return gm.get_states(tracker_ids, list_blocked=True, allow_not_exist=True)
+
+# @st.cache_data(ttl=300, show_spinner=False)
+def load_employees(api_key):
+    gm = GMAPI(api_key)
+    return gm.get_employees()
+
+# @st.cache_data(ttl=300, show_spinner=False)
+def load_vehicles(api_key):
+    gm = GMAPI(api_key)
+    return gm.get_vehicles()
+
+# @st.cache_data(ttl=600, show_spinner=False) # Кэш на 10 минут для тяжелых поездок
+def load_trips_stats(api_key, tracker_ids, from_dt, to_dt):
+    gm = GMAPI(api_key)
+    return gm.get_trips_parallel(tracker_ids, from_dt, to_dt)
+
+def process_driver_licenses(employees):
     today = datetime.now().date()
     soon_limit = today + timedelta(days=30)
 
@@ -60,8 +88,9 @@ def process_driver_licenses(employees):
             continue
 
         try:
+            # Пытаемся распарсить дату
             dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
-        except:
+        except ValueError:
             stats["empty"] += 1
             details["empty"].append(name)
             continue
@@ -101,7 +130,7 @@ def process_insurance(vehicles):
 
         try:
             dt = datetime.strptime(valid_till, "%Y-%m-%d").date()
-        except:
+        except ValueError:
             stats["empty"] += 1
             details["empty"].append(item)
             continue
@@ -143,62 +172,67 @@ st.markdown(
 # === Подключаемся к API ===
 gm = GMAPI(api_key)
 
-# === Получаем список трекеров ===
-data = gm.get_trackers()
+# === Получаем список трекеров (Кэшировано) ===
+try:
+    data = load_trackers(api_key)
+except Exception as e:
+    st.error(f"Ошибка при загрузке списка трекеров: {e}")
+    st.stop()
 
 if "list" not in data:
     st.error("Ответ API не содержит ключ 'list'")
-else:
-    trackers = data["list"]
+    st.stop()
 
-    # === Блок: Автоматическая статистика по статусам ===
-    # Получаем ID всех трекеров
-    tracker_ids = [int(t["id"]) for t in trackers]
+trackers = data["list"]
+tracker_ids = [int(t["id"]) for t in trackers]
 
-    # Получаем их текущее состояние через API
-    try:
-        states_response = gm.get_states(tracker_ids, list_blocked=True, allow_not_exist=True)
-        states = states_response.get("states", {})
-    except Exception as e:
-        st.error(f"Ошибка при получении состояний трекеров: {e}")
-        states_response = {}
-        states = {}
+# === Блок 1: Верхняя часть (Статусы, Права, Страховка) - Грузится быстро ===
 
-    # Инициализация счётчиков (канонические статусы)
-    counters = {
-        "Едет": 0,
-        "Стоит": 0,
-        "Холостой ход": 0,
-        "Нет координат": 0,
-        "Не в сети": 0
-    }
+# Получаем состояния (Кэшировано)
+try:
+    states_response = load_states(api_key, tracker_ids)
+    states = states_response.get("states", {})
+except Exception as e:
+    st.error(f"Ошибка при получении состояний трекеров: {e}")
+    states = {}
 
-    # Нормализация вариантов статусов
-    status_norm_map = {
-        "В движении": "Едет",
-        "Едет": "Едет",
-        "Стоит": "Стоит",
-        "Стоит с включенным зажиганием": "Холостой ход",
-        "Холостой ход": "Холостой ход",
-        "Нет координат": "Нет координат",
-        "Не в сети": "Не в сети",
-    }
+# Инициализация счётчиков
+counters = {
+    "Едет": 0,
+    "Стоит": 0,
+    "Холостой ход": 0,
+    "Нет координат": 0,
+    "Не в сети": 0
+}
 
-    # Перебираем все состояния
-    for tid, state in states.items():
-        raw_status = gm.get_tracker_status(state)
-        canon = status_norm_map.get(raw_status, raw_status)
-        counters[canon] = counters.get(canon, 0) + 1
+status_norm_map = {
+    "В движении": "Едет",
+    "Едет": "Едет",
+    "Стоит": "Стоит",
+    "Стоит с включенным зажиганием": "Холостой ход",
+    "Холостой ход": "Холостой ход",
+    "Нет координат": "Нет координат",
+    "Не в сети": "Не в сети",
+}
 
-    # === Визуализация пирога ===
-    labels, values = [], []
-    for k, v in counters.items():
-        if v > 0:
-            labels.append(k)
-            values.append(v)
+for tid, state in states.items():
+    raw_status = gm.get_tracker_status(state)
+    canon = status_norm_map.get(raw_status, raw_status)
+    counters[canon] = counters.get(canon, 0) + 1
 
+# Визуализация пирога
+labels, values = [], []
+for k, v in counters.items():
+    if v > 0:
+        labels.append(k)
+        values.append(v)
+
+col_left, col_center, col_right = st.columns([1, 1, 1], border=True)
+
+with col_left:
+    section_title("Текущее состояние автопарка")
     if not values:
-        st.info("Нет данных по статусам устройств для отображения диаграммы.")
+        st.info("Нет данных")
     else:
         status_colors = {
             "Едет": "#3CB371",
@@ -221,6 +255,7 @@ else:
         ))
 
         total = sum(values)
+        fleet_total = total
         fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
         fig.update_layout(
             showlegend=False,
@@ -233,60 +268,244 @@ else:
                 showarrow=False
             )]
         )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        col_left, col_center, col_right = st.columns([1, 1, 1], border=True)
-        with col_left:
-                section_title("Текущее состояние автопарка")
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+with col_center:
+    section_title("Водительские удостоверения")
+    try:
+        employees_data = load_employees(api_key)
+        employees = employees_data.get("list", [])
+    except Exception as e:
+        st.error(f"Ошибка: {e}")
+        employees = []
+    
+    if not employees:
+        st.warning("⚠️ Данные отсутствуют - заполните раздел Водители")
+    else:
+        vu_stats, vu_details = process_driver_licenses(employees)
+        draw_status_card(vu_stats, vu_details)
 
-        with col_center:
-            # === Водительские удостоверения ===
-            section_title("Водительские удостоверения")
+with col_right:
+    section_title("Страховка")
+    try:
+        vehicles_data = load_vehicles(api_key)
+        vehicles = vehicles_data.get("list", [])
+    except Exception as e:
+        st.error(f"Ошибка: {e}")
+        vehicles = []
+
+    if not vehicles:
+        st.warning("⚠️ Данные отсутствуют - заполните раздел Транспорт")
+    else:
+        insurance_stats, insurance_details = process_insurance(vehicles)
+        draw_status_card(insurance_stats, insurance_details)
+
+
+# === БЛОК 2: Тяжелые данные (Поездки) ===
+st.markdown("<hr style='margin-top:40px;margin-bottom:25px;'>", unsafe_allow_html=True)
+
+# Контейнер для метрик, чтобы они появились после загрузки
+metrics_container = st.container()
+
+# Функция для расчета дат с учетом таймзоны
+def get_day_range_ts(date_obj, tz_name="Europe/Moscow"):
+    tz = ZoneInfo(tz_name)
+    # Начало дня в локальной зоне
+    start_local = datetime.combine(date_obj, datetime.min.time()).replace(tzinfo=tz)
+    # Конец дня
+    end_local = start_local + timedelta(days=1) - timedelta(seconds=1)
+    
+    # API требует строки в формате "YYYY-MM-DD HH:MM:SS"
+    fmt = "%Y-%m-%d %H:%M:%S"
+    return start_local.strftime(fmt), end_local.strftime(fmt)
+
+# Локальные даты
+tz_msk = ZoneInfo("Europe/Moscow")
+now_msk = datetime.now(tz_msk)
+today = now_msk.date()
+yesterday = today - timedelta(days=1)
+day_before = today - timedelta(days=2)
+
+# Получаем таймстампы для запроса (сразу за 2 дня)
+from_dt, _ = get_day_range_ts(day_before)
+_, to_dt = get_day_range_ts(yesterday)
+
+# === Оптимизация: Фильтруем трекеры, которые давно не обновлялись ===
+active_tracker_ids = []
+# Парсим дату начала периода для сравнения
+try:
+    period_start_dt = datetime.strptime(from_dt, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Europe/Moscow"))
+except:
+    period_start_dt = None
+
+if period_start_dt:
+    for tid in tracker_ids:
+        state_obj = states.get(tid, {})
+        # last_update может быть в state_obj или внутри state_obj["state"]
+        # Обычно это поле "last_update" (строка)
+        s = state_obj.get("state", state_obj)
+        last_upd_str = s.get("last_update")
+        
+        if not last_upd_str:
+            # Если нет даты обновления, на всякий случай берем
+            active_tracker_ids.append(tid)
+            continue
+            
+        try:
+            # Формат обычно "YYYY-MM-DD HH:MM:SS"
+            # Предполагаем, что API возвращает время в UTC или локальное. 
+            # Для надежности просто сравниваем строки (YYYY-MM-DD) или парсим
+            lu_dt = datetime.strptime(last_upd_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Europe/Moscow"))
+            
+            # Если последнее обновление было ПОЗЖЕ начала периода (с запасом 1 день), берем
+            # Или если оно было ХОТЯ БЫ в этом периоде
+            if lu_dt >= period_start_dt - timedelta(days=1):
+                active_tracker_ids.append(tid)
+        except:
+            # Если ошибка парсинга, берем
+            active_tracker_ids.append(tid)
+else:
+    active_tracker_ids = tracker_ids
+
+# === ЗАГРУЗКА ПОЕЗДОК С ИНДИКАЦИЕЙ ===
+# Используем st.status для красивого отображения процесса
+with st.status(f"Загрузка истории поездок ({len(active_tracker_ids)} из {len(tracker_ids)} активных)...", expanded=True) as status:
+    st.write("Подключение к API...")
+    # Загружаем данные (Кэшировано!)
+    try:
+        two_days_trips = load_trips_stats(api_key, active_tracker_ids, from_dt, to_dt)
+        status.update(label="Данные успешно загружены!", state="complete", expanded=False)
+    except Exception as e:
+        status.update(label="Ошибка загрузки данных!", state="error")
+        st.error(f"Не удалось получить данные о поездках: {e}")
+        st.stop()
+
+# --- Обработка данных (быстро, в памяти) ---
+yesterday_str = yesterday.strftime("%Y-%m-%d")
+day_before_str = day_before.strftime("%Y-%m-%d")
+
+yesterday_trips = []
+day_before_trips = []
+
+for item in two_days_trips:
+    tid = item["id"]
+    trips = item["trips"]
+
+    y_list = []
+    db_list = []
+
+    for tr in trips:
+        start_str = tr.get("start_date") # "2025-11-16 10:00:00"
+        if not start_str:
+            continue
+        
+        # API возвращает дату как строку, берем первые 10 символов (YYYY-MM-DD)
+        trip_date = start_str[:10]
+
+        if trip_date == yesterday_str:
+            y_list.append(tr)
+        elif trip_date == day_before_str:
+            db_list.append(tr)
+
+    yesterday_trips.append({"id": tid, "trips": y_list})
+    day_before_trips.append({"id": tid, "trips": db_list})
+
+# --- KPI расчёты ---
+active_count = sum(1 for t in yesterday_trips if len(t["trips"]) > 0)
+prev_active_count = sum(1 for t in day_before_trips if len(t["trips"]) > 0)
+
+total_distance = 0.0
+total_move_time = 0
+total_idle_time = 0
+
+for item in yesterday_trips:
+    for tr in item["trips"]:
+        total_distance += float(tr.get("length", 0) or 0)
+        
+        # Расчет времени в пути (через разницу дат)
+        s_str = tr.get("start_date")
+        e_str = tr.get("end_date")
+        if s_str and e_str:
             try:
-                employees = gm.get_employees().get("list", [])
-            except Exception as e:
-                st.error(f"Ошибка при загрузке сотрудников: {e}")
-                employees = []
-            # --- Если водителей нет ---
-            if not employees:
-                st.markdown("""
-                    <div style="
-                        padding: 15px 20px;
-                        border-radius: 10px;
-                        background: #ffffff;
-                        border: 1px solid #ddd;
-                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
-                        font-size: 17px;">
-                        ⚠️ Данные отсутствуют — заполните раздел «Водители»
-                    </div>
-                """, unsafe_allow_html=True)
+                s_dt = datetime.strptime(s_str, "%Y-%m-%d %H:%M:%S")
+                e_dt = datetime.strptime(e_str, "%Y-%m-%d %H:%M:%S")
+                dur = (e_dt - s_dt).total_seconds()
+                if dur > 0:
+                    total_move_time += dur
+            except:
+                # Если не удалось распарсить, пробуем взять поле duration, если оно есть
+                total_move_time += (tr.get("duration") or 0)
+        else:
+             total_move_time += (tr.get("duration") or 0)
 
-            else:
-                vu_stats, vu_details = process_driver_licenses(employees)
-                draw_status_card(vu_stats, vu_details)
-        with col_right:
-            section_title("Страховка")
+        # Холостой ход (idle_duration)
+        idle_sec = tr.get("idle_duration") or 0
+        if isinstance(idle_sec, (int, float)):
+            total_idle_time += idle_sec
 
-            try:
-                vehicles = gm.get_vehicles().get("list", [])
-            except Exception as e:
-                st.error(f"Ошибка при загрузке транспорта: {e}")
-                vehicles = []
+def fmt_time(seconds):
+    if not seconds or seconds <= 0:
+        return "0 ч"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    return f"{h} ч {m} мин"
 
-            if not vehicles:
-                st.markdown("""
-                    <div style="
-                        padding: 15px 20px;
-                        border-radius: 10px;
-                        background: #ffffff;
-                        border: 1px solid #ddd;
-                        box-shadow: 0px 1px 3px rgba(0,0,0,0.06);
-                        font-size: 17px;">
-                        ⚠️ Данные отсутствуют — заполните раздел «Автомобили»
-                    </div>
-                """, unsafe_allow_html=True)
+avg_drive_time = fmt_time(total_move_time / active_count if active_count else 0)
+idle_time_fmt = fmt_time(total_idle_time)
 
-            else:
-                insurance_stats, insurance_details = process_insurance(vehicles)
-                draw_status_card(insurance_stats, insurance_details)
+# Расчет среднего пробега на авто
+avg_mileage = total_distance / active_count if active_count else 0
 
+# Тренд
+if active_count > prev_active_count:
+    trend = "↑ Больше, чем позавчера"
+    trend_color = "#3CB371"
+    trend_val = active_count - prev_active_count
+    trend_sign = "+" if trend_val > 0 else ""
+    trend_text = f"{trend_sign}{trend_val}"
+elif active_count < prev_active_count:
+    trend = "↓ Меньше, чем позавчера"
+    trend_color = "#E74C3C"
+    trend_val = active_count - prev_active_count
+    trend_text = f"{trend_val}"
+else:
+    trend = "→ Без изменений"
+    trend_color = "#888"
+    trend_text = "0"
+
+
+# === Вывод метрик ===
+with metrics_container:
+    col_a, col_b, col_c = st.columns([1, 1, 1], border=True)
+    
+    with col_a:
+        section_title("Активность за период")
+        st.markdown(f"""
+            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+                <div style="font-size:17px; color:#444;">Активных ТС</div>
+                <div style="font-size:30px; font-weight:600;">{active_count} / {len(trackers)}</div>
+                <div style="font-size:14px; color:{trend_color}; margin-top:8px;">{trend}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with col_b:
+        section_title("Пробег и движение")
+        st.markdown(f"""
+            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+                <div style="font-size:17px; color:#444;">Общий пробег (вчера)</div>
+                <div style="font-size:30px; font-weight:600;">{total_distance:,.1f} км</div>
+                <div style="margin-top:10px; font-size:15px; color:#666;">
+                    Среднее время в пути: <b>{avg_drive_time}</b><br>
+                    Средний пробег на авто: <b>{avg_mileage:.1f} км</b>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with col_c:
+        section_title("Холостой ход")
+        st.markdown(f"""
+            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+                <div style="font-size:17px; color:#444;">Суммарный холостой ход (вчера)</div>
+                <div style="font-size:30px; font-weight:600;">{idle_time_fmt}</div>
+            </div>
+        """, unsafe_allow_html=True)
