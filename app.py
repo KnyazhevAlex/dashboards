@@ -7,14 +7,10 @@ from zoneinfo import ZoneInfo
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-def section_title(text, top_offset=-10):
-    #Разметка заголовков
+def section_title(text):
+    """Минималистичный заголовок секции"""
     st.markdown(
-        f"""
-        <div style='margin-top:{top_offset}px; margin-bottom:10px;'>
-            <h3 style="margin: 0; text-align:center; font-weight:600;">{text}</h3>
-        </div>
-        """,
+        f"<h3 style='text-align:center; margin-bottom:1rem;'>{text}</h3>",
         unsafe_allow_html=True
     )
 
@@ -254,78 +250,82 @@ for k, v in counters.items():
         labels.append(k)
         values.append(v)
 
-col_left, col_center, col_right = st.columns([1, 1, 1], border=True)
+col_left, col_center, col_right = st.columns([1, 1, 1])
 
 with col_left:
-    section_title("Текущее состояние автопарка")
-    if not values:
-        st.info("Нет данных")
-    else:
-        status_colors = {
-            "Едет": "#3CB371",
-            "Стоит": "#1E90FF",
-            "Холостой ход": "#FFD966",
-            "Нет координат": "#A9A9A9",
-            "Не в сети": "#E74C3C"
-        }
-        colors = [status_colors.get(lbl, "#CCCCCC") for lbl in labels]
+    with st.container(border=True):
+        section_title("Текущее состояние автопарка")
+        if not values:
+            st.info("Нет данных")
+        else:
+            # Мягкая минималистичная палитра
+            status_colors = {
+                "Едет": "#10b981",
+                "Стоит": "#3b82f6",
+                "Холостой ход": "#f59e0b",
+                "Нет координат": "#9ca3af",
+                "Не в сети": "#ef4444"
+            }
+            colors = [status_colors.get(lbl, "#CCCCCC") for lbl in labels]
 
-        fig = go.Figure(go.Pie(
-            labels=labels,
-            values=values,
-            hole=0.55,
-            marker=dict(colors=colors),
-            sort=False,
-            textinfo='percent',
-            hoverinfo='label+value+percent',
-            hovertemplate='%{label}: %{value} устройств (%{percent})<extra></extra>'
-        ))
+            fig = go.Figure(go.Pie(
+                labels=labels,
+                values=values,
+                hole=0.55,
+                marker=dict(colors=colors),
+                sort=False,
+                textinfo='percent',
+                hoverinfo='label+value+percent',
+                hovertemplate='%{label}: %{value} устройств (%{percent})<extra></extra>'
+            ))
 
-        total = sum(values)
-        fleet_total = total
-        fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
-        fig.update_layout(
-            showlegend=False,
-            margin=dict(t=20, b=10, l=10, r=10),
-            height=320,
-            annotations=[dict(
-                text=f"Всего<br><b>{total}</b>",
-                x=0.5, y=0.5,
-                font=dict(size=20, color='#333'),
-                showarrow=False
-            )]
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            total = sum(values)
+            fleet_total = total
+            fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
+            fig.update_layout(
+                showlegend=False,
+                margin=dict(t=20, b=10, l=10, r=10),
+                height=320,
+                annotations=[dict(
+                    text=f"Всего<br><b>{total}</b>",
+                    x=0.5, y=0.5,
+                    font=dict(size=20, color='#333'),
+                    showarrow=False
+                )]
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 with col_center:
-    section_title("Водительские удостоверения")
-    try:
-        employees_data = load_employees(api_key)
-        employees = employees_data.get("list", [])
-    except Exception as e:
-        st.error(f"Ошибка: {e}")
-        employees = []
-    
-    if not employees:
-        st.warning("⚠️ Данные отсутствуют - заполните раздел Водители")
-    else:
-        vu_stats, vu_details = process_driver_licenses(employees)
-        draw_status_card(vu_stats, vu_details)
+    with st.container(border=True):
+        section_title("Водительские удостоверения")
+        try:
+            employees_data = load_employees(api_key)
+            employees = employees_data.get("list", [])
+        except Exception as e:
+            st.error(f"Ошибка: {e}")
+            employees = []
+        
+        if not employees:
+            st.warning("⚠️ Данные отсутствуют - заполните раздел Водители")
+        else:
+            vu_stats, vu_details = process_driver_licenses(employees)
+            draw_status_card(vu_stats, vu_details)
 
 with col_right:
-    section_title("Страховка")
-    try:
-        vehicles_data = load_vehicles(api_key)
-        vehicles = vehicles_data.get("list", [])
-    except Exception as e:
-        st.error(f"Ошибка: {e}")
-        vehicles = []
+    with st.container(border=True):
+        section_title("Страховка")
+        try:
+            vehicles_data = load_vehicles(api_key)
+            vehicles = vehicles_data.get("list", [])
+        except Exception as e:
+            st.error(f"Ошибка: {e}")
+            vehicles = []
 
-    if not vehicles:
-        st.warning("⚠️ Данные отсутствуют - заполните раздел Транспорт")
-    else:
-        insurance_stats, insurance_details = process_insurance(vehicles)
-        draw_status_card(insurance_stats, insurance_details)
+        if not vehicles:
+            st.warning("⚠️ Данные отсутствуют - заполните раздел Транспорт")
+        else:
+            insurance_stats, insurance_details = process_insurance(vehicles)
+            draw_status_card(insurance_stats, insurance_details)
 
 
 # === БЛОК 2: Тяжелые данные (Поездки) ===
@@ -501,40 +501,41 @@ else:
 
 
 # === Вывод метрик ===
+st.write("")  # Добавляем пространство
+
 with metrics_container:
-    col_a, col_b, col_c = st.columns([1, 1, 1], border=True)
+    col_a, col_b, col_c = st.columns([1, 1, 1])
     
     with col_a:
-        section_title("Активность за период")
-        st.markdown(f"""
-            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                <div style="font-size:17px; color:#444;">Активных ТС</div>
-                <div style="font-size:30px; font-weight:600;">{active_count} / {len(trackers)}</div>
-                <div style="font-size:14px; color:{trend_color}; margin-top:8px;">{trend}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        with st.container(border=True):
+            section_title("Активность за период")
+            st.metric(
+                label="Активных ТС",
+                value=f"{active_count} / {len(trackers)}",
+                delta=trend_text,
+                help="Количество транспортных средств, совершивших поездки"
+            )
+            st.caption(trend)
 
     with col_b:
-        section_title("Пробег и движение")
-        st.markdown(f"""
-            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                <div style="font-size:17px; color:#444;">Общий пробег (вчера)</div>
-                <div style="font-size:30px; font-weight:600;">{total_distance:,.1f} км</div>
-                <div style="margin-top:10px; font-size:15px; color:#666;">
-                    Среднее время в пути: <b>{avg_drive_time}</b><br>
-                    Средний пробег на авто: <b>{avg_mileage:.1f} км</b>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
+        with st.container(border=True):
+            section_title("Пробег и движение")
+            st.metric(
+                label="Общий пробег (вчера)",
+                value=f"{total_distance:,.1f} км",
+                help="Суммарный пробег всех активных ТС"
+            )
+            st.caption(f"⏱️ Среднее время в пути: **{avg_drive_time}**")
+            st.caption(f"📏 Средний пробег на авто: **{avg_mileage:.1f} км**")
 
     with col_c:
-        section_title("Холостой ход")
-        st.markdown(f"""
-            <div style="padding:15px 20px; border-radius:12px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                <div style="font-size:17px; color:#444;">Суммарный холостой ход (вчера)</div>
-                <div style="font-size:30px; font-weight:600;">{idle_time_fmt}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        with st.container(border=True):
+            section_title("Холостой ход")
+            st.metric(
+                label="Суммарный холостой ход (вчера)",
+                value=idle_time_fmt,
+                help="Время работы двигателя без движения"
+            )
 
 # === БЛОК 3: Топливо (Отчеты) ===
 
@@ -664,42 +665,47 @@ if fuel_report_y and fuel_report_y.get("success"):
             
         # Визуализация
         with fuel_container:
-            section_title("Топливо (Вчера)")
+            st.write("")  # Добавляем пространство
             
-            # Поле для ввода цены топлива
-            fuel_price = st.number_input(
-                "Цена топлива (₽/литр)",
-                min_value=0.0,
-                max_value=200.0,
-                value=63.0,
-                step=0.5,
-                help="Введите актуальную цену топлива для расчета финансовых показателей",
-                key="fuel_price_input"
-            )
-            
-            # Пересчет стоимости на основе введенной цены
-            fillings_cost = fillings_vol * fuel_price
-            consumed_cost = consumed * fuel_price
-            drains_cost = drains_vol * fuel_price
-            
-            c1, c2, c3, c4 = st.columns(4, border=True)
-            
-            with c1:
-                st.metric("Заправлено", f"{fillings_vol:.1f} л", delta=trend_str, help="Сравнение с позавчерашним днем")
-                st.caption(f"≈ {fillings_cost:,.0f} ₽")
-                st.caption(f"Количество заправок: {fillings_count}")
+            with st.container(border=True):
+                section_title("Топливо (Вчера)")
                 
-            with c2:
-                st.metric("Потрачено", f"{consumed:.1f} л", delta=consumed_trend_str, help="Сравнение с позавчерашним днем")
-                st.caption(f"≈ {consumed_cost:,.0f} ₽")
+                # Поле для ввода цены топлива
+                fuel_price = st.number_input(
+                    "Цена топлива (₽/литр)",
+                    min_value=0.0,
+                    max_value=200.0,
+                    value=63.0,
+                    step=0.5,
+                    help="Введите актуальную цену топлива для расчета финансовых показателей",
+                    key="fuel_price_input"
+                )
                 
-            with c3:
-                st.metric("Слито (Потери)", f"{drains_vol:.1f} л", delta=drains_trend_str, delta_color="inverse", help="Сравнение с позавчерашним днем")
-                st.caption(f"≈ {drains_cost:,.0f} ₽")
-                st.caption(f"Количество сливов: {drains_count}")
+                # Пересчет стоимости на основе введенной цены
+                fillings_cost = fillings_vol * fuel_price
+                consumed_cost = consumed * fuel_price
+                drains_cost = drains_vol * fuel_price
                 
-            with c4:
-                st.metric("Процент потерь", f"{loss_pct:.1f}%", delta=loss_pct_trend_str, delta_color="inverse", help="Отношение объема сливов к объему заправок")
+                st.write("")  # Пространство перед метриками
+                
+                c1, c2, c3, c4 = st.columns(4)
+                
+                with c1:
+                    st.metric("Заправлено", f"{fillings_vol:.1f} л", delta=trend_str, help="Сравнение с позавчерашним днем")
+                    st.caption(f"💰 {fillings_cost:,.0f} ₽")
+                    st.caption(f"⛽ Заправок: {fillings_count}")
+                    
+                with c2:
+                    st.metric("Потрачено", f"{consumed:.1f} л", delta=consumed_trend_str, help="Сравнение с позавчерашним днем")
+                    st.caption(f"💰 {consumed_cost:,.0f} ₽")
+                    
+                with c3:
+                    st.metric("Слито (Потери)", f"{drains_vol:.1f} л", delta=drains_trend_str, delta_color="inverse", help="Сравнение с позавчерашним днем")
+                    st.caption(f"💰 {drains_cost:,.0f} ₽")
+                    st.caption(f"🚨 Сливов: {drains_count}")
+                    
+                with c4:
+                    st.metric("Процент потерь", f"{loss_pct:.1f}%", delta=loss_pct_trend_str, delta_color="inverse", help="Отношение объема сливов к объему заправок")
 
                 
     except Exception as e:
