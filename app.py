@@ -393,16 +393,11 @@ if period_start_dt:
 else:
     active_tracker_ids = tracker_ids
 
-# === ЗАГРУЗКА ПОЕЗДОК С ИНДИКАЦИЕЙ ===
-# Используем st.status для красивого отображения процесса
-with st.status(f"Загрузка истории поездок ({len(active_tracker_ids)} из {len(tracker_ids)} активных)...", expanded=True) as status:
-    st.write("Подключение к API...")
-    # Загружаем данные (Кэшировано!)
+# === ЗАГРУЗКА ПОЕЗДОК ===
+with st.spinner(f"Загрузка истории поездок ({len(active_tracker_ids)} из {len(tracker_ids)} активных)..."):
     try:
         two_days_trips = load_trips_stats(api_key, active_tracker_ids, from_dt, to_dt)
-        status.update(label="Данные успешно загружены!", state="complete", expanded=False)
     except Exception as e:
-        status.update(label="Ошибка загрузки данных!", state="error")
         st.error(f"Не удалось получить данные о поездках: {e}")
         st.stop()
 
@@ -542,14 +537,13 @@ with metrics_container:
 # Загружаем данные по топливу
 fuel_container = st.container()
 
-with st.status("Загрузка данных по топливу (сравнение с позавчера)...", expanded=False) as status:
+with st.spinner("Загрузка данных по топливу..."):
     # Даты для вчера и позавчера
     f_start_y, f_end_y = get_day_range_ts(yesterday)
     f_start_db, f_end_db = get_day_range_ts(day_before)
     
     # Проверка на наличие активных трекеров
     if not active_tracker_ids:
-        status.update(label="Нет активных трекеров для отчета", state="complete")
         fuel_report_y = None
         fuel_report_db = None
     else:
@@ -563,8 +557,7 @@ with st.status("Загрузка данных по топливу (сравне�
         
         # Проверяем ошибки (хотя бы за вчера должно загрузиться)
         if "error" in fuel_data_y:
-            status.update(label="Ошибка загрузки топлива (Вчера)", state="error")
-            st.error(f"Ошибка (Вчера): {fuel_data_y['error']}")
+            st.error(f"Ошибка загрузки топлива: {fuel_data_y['error']}")
             fuel_report_y = None
         else:
             fuel_report_y = fuel_data_y
@@ -574,8 +567,6 @@ with st.status("Загрузка данных по топливу (сравне�
             fuel_report_db = None
         else:
             fuel_report_db = fuel_data_db
-            
-    status.update(label="Данные по топливу загружены", state="complete")
 
 if fuel_report_y and fuel_report_y.get("success"):
     try:
@@ -710,4 +701,3 @@ if fuel_report_y and fuel_report_y.get("success"):
                 
     except Exception as e:
         st.error(f"Ошибка обработки отчета: {e}")
-
