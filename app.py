@@ -510,7 +510,7 @@ with metrics_container:
         with st.container(border=True):
             section_title("Активность за период")
             st.metric(
-                label="Активных ТС",
+                label="Активных ТС (вчера)",
                 value=f"{active_count} / {len(trackers)}",
                 delta=trend_text,
                 help="Количество транспортных средств, совершивших поездки"
@@ -710,3 +710,4 @@ if fuel_report_y and fuel_report_y.get("success"):
                 
     except Exception as e:
         st.error(f"Ошибка обработки отчета: {e}")
+
