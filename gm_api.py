@@ -165,6 +165,31 @@ class GMAPI:
 
     # === Работа с отчетами (Fuel) ===
 
+    def _post_with_retry(self, url: str, payload: dict, max_retries: int = 5):
+        """Выполняет POST запрос с повторными попытками при ошибке 429."""
+        # Небольшая задержка перед каждым запросом на генерацию, 
+        # чтобы избежать пачек одновременных вызовов
+        time.sleep(1.5)
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(url, json=payload, timeout=30)
+                if response.status_code == 429:
+                    wait_time = (2 ** attempt) + 1
+                    logger.warning(f"Rate limit hit (429). Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429 and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1
+                    time.sleep(wait_time)
+                    continue
+                raise e
+        return None
+
     def generate_fuel_report(self, tracker_ids: list[int], from_dt: str, to_dt: str):
         """
         Инициирует создание отчета по топливу.
@@ -209,9 +234,7 @@ class GMAPI:
             "locale": "ru"
         }
 
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        return self._post_with_retry(url, payload)
 
     def get_report_status(self, report_id: int):
         """Проверяет готовность отчета"""
@@ -221,9 +244,18 @@ class GMAPI:
             "report_id": report_id,
             "locale": "ru"
         }
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+        # Для статуса тоже добавим легкую обработку 429, так как поллинг бывает частым
+        for attempt in range(3):
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                if response.status_code == 429:
+                    time.sleep(2)
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except:
+                if attempt == 2: raise
+                time.sleep(1)
 
     def retrieve_report(self, report_id: int):
         """Скачивает готовый отчет"""
@@ -232,6 +264,64 @@ class GMAPI:
             "hash": self.api_key,
             "report_id": report_id
         }
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+        # Аналогично для скачивания
+        for attempt in range(3):
+            try:
+                response = requests.get(url, params=params, timeout=20)
+                if response.status_code == 429:
+                    time.sleep(2)
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except:
+                if attempt == 2: raise
+                time.sleep(1)
+
+
+    def generate_trip_report(self, tracker_ids: list[int], from_dt: str, to_dt: str):
+        """
+        Генерация отчета по поездкам (plugin_id=4).
+        """
+        url = f"{self.base_url}/report/tracker/generate"
+        
+        plugin_params = {
+            "plugin_id": 4,
+            "include_summary_sheet_only": False,
+            "split": False,
+            "show_coordinates": False,
+            "show_idle_duration": False,
+            "show_seconds": False
+        }
+
+        # Фильтр по времени (весь день)
+        time_filter = {
+            "from": "00:00:00",
+            "to": "23:59:59",
+            "weekdays": [1, 2, 3, 4, 5, 6, 7]
+        }
+
+        payload = {
+            "hash": self.api_key,
+            "title": "Trip Report",
+            "trackers": tracker_ids,
+            "from": from_dt,
+            "to": to_dt,
+            "time_filter": time_filter,
+            "plugin": plugin_params,
+            "locale": "ru"
+        }
+
+        return self._post_with_retry(url, payload)
+
+    def wait_for_report(self, report_id: int, timeout: int = 60):
+        """
+        Ожидание готовности отчета (поллинг).
+        Возвращает итоговый статус или вызывает ошибку по таймауту.
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            status = self.get_report_status(report_id)
+            if status and status.get("success") and status.get("percent_ready") == 100:
+                return status
+            time.sleep(3) # Чуть увеличим паузу между проверками
+        raise TimeoutError(f"Report {report_id} generation timed out")
