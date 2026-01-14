@@ -68,7 +68,7 @@ def load_trips_stats(api_key, tracker_ids, from_dt, to_dt):
     gm = GMAPI(api_key)
     return gm.get_trips_parallel(tracker_ids, from_dt, to_dt)
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False) # Увеличим до 30 минут, отчеты по топливу не меняются часто
 def load_fuel_data(api_key, tracker_ids, from_dt, to_dt):
     gm = GMAPI(api_key)
     try:
@@ -91,6 +91,91 @@ def load_fuel_data(api_key, tracker_ids, from_dt, to_dt):
         # 3. Скачивание
         return gm.retrieve_report(report_id)
         
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def parse_trip_report(report_json):
+    daily_stats = {}
+    if not report_json or not report_json.get("success"):
+        return daily_stats
+    try:
+        sheets = report_json.get("report", {}).get("sheets", [])
+        for sheet in sheets:
+            sections = sheet.get("sections", [])
+            for section in sections:
+                for data_item in section.get("data", []):
+                    header = data_item.get("header", "")
+                    if not header: continue
+                    # "25.11.2025 (Вт) : 1" -> "25.11.2025"
+                    date_part = header.split(" ")[0]
+                    try:
+                        dt = datetime.strptime(date_part, "%d.%m.%Y").date()
+                        iso_date = dt.strftime("%Y-%m-%d")
+                        length_raw = data_item.get("total", {}).get("length", {}).get("raw", 0)
+                        val = float(length_raw) if length_raw else 0.0
+                        daily_stats[iso_date] = daily_stats.get(iso_date, 0) + val
+                    except ValueError:
+                        continue
+    except Exception as e:
+        pass
+    return daily_stats
+
+@st.cache_data(ttl=1800, show_spinner=False) # Увеличим до 30 минут
+def load_weekly_mileage(api_key, tracker_ids):
+    gm = GMAPI(api_key)
+    tz = ZoneInfo("Europe/Moscow")
+    today = datetime.now(tz).date()
+    
+    # Current week (Mon-Sun)
+    start_curr = today - timedelta(days=today.weekday())
+    end_curr = start_curr + timedelta(days=6)
+    
+    # Previous week
+    start_prev = start_curr - timedelta(days=7)
+    end_prev = start_prev + timedelta(days=6)
+    
+    fmt = "%Y-%m-%d %H:%M:%S"
+    def get_range_str(s, e):
+        s_dt = datetime.combine(s, datetime.min.time())
+        e_dt = datetime.combine(e, datetime.max.time())
+        return s_dt.strftime(fmt), e_dt.strftime(fmt)
+
+    range_prev_str = get_range_str(start_prev, end_prev)
+    range_curr_str = get_range_str(start_curr, end_curr)
+    
+    try:
+        # Generate reports
+        r_prev = gm.generate_trip_report(tracker_ids, range_prev_str[0], range_prev_str[1])
+        # Небольшая пауза между вызовами, чтобы не триггерить 429
+        time.sleep(2) 
+        r_curr = gm.generate_trip_report(tracker_ids, range_curr_str[0], range_curr_str[1])
+        
+        id_prev = r_prev.get("id")
+        id_curr = r_curr.get("id")
+        
+        if not id_prev or not id_curr:
+            return {"error": "Не удалось создать отчеты"}
+            
+        # Wait
+        gm.wait_for_report(id_prev)
+        gm.wait_for_report(id_curr)
+        
+        # Retrieve
+        data_prev = gm.retrieve_report(id_prev)
+        data_curr = gm.retrieve_report(id_curr)
+        
+        parsed_prev = parse_trip_report(data_prev)
+        parsed_curr = parse_trip_report(data_curr)
+        
+        return {
+            "prev": parsed_prev,
+            "curr": parsed_curr,
+            "dates": {
+                "prev_start": start_prev,
+                "curr_start": start_curr
+            }
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -250,88 +335,102 @@ for k, v in counters.items():
         labels.append(k)
         values.append(v)
 
-col_left, col_center, col_right = st.columns([1, 1, 1])
+# === Создание вкладок (через Radio для Lazy Loading) ===
+selected_tab = st.radio(
+    "Навигация", 
+    ["Основная", "Идеи"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
 
-with col_left:
-    with st.container(border=True):
-        section_title("Текущее состояние автопарка")
-        if not values:
-            st.info("Нет данных")
-        else:
-            # Мягкая минималистичная палитра
-            status_colors = {
-                "Едет": "#10b981",
-                "Стоит": "#3b82f6",
-                "Холостой ход": "#f59e0b",
-                "Нет координат": "#9ca3af",
-                "Не в сети": "#ef4444"
-            }
-            colors = [status_colors.get(lbl, "#CCCCCC") for lbl in labels]
+# === Заполнение вкладок ===
 
-            fig = go.Figure(go.Pie(
-                labels=labels,
-                values=values,
-                hole=0.55,
-                marker=dict(colors=colors),
-                sort=False,
-                textinfo='percent',
-                hoverinfo='label+value+percent',
-                hovertemplate='%{label}: %{value} устройств (%{percent})<extra></extra>'
-            ))
+if selected_tab == "Основная":
+    mc1, mc2, mc3 = st.columns(3)
 
-            total = sum(values)
-            fleet_total = total
-            fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
-            fig.update_layout(
-                showlegend=False,
-                margin=dict(t=20, b=10, l=10, r=10),
-                height=320,
-                annotations=[dict(
-                    text=f"Всего<br><b>{total}</b>",
-                    x=0.5, y=0.5,
-                    font=dict(size=20, color='#333'),
-                    showarrow=False
-                )]
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    # 1. Текущее состояние (Main - Col 1)
+    with mc1:
+        with st.container(border=True):
+            section_title("Статусы устройств")
+            if not values:
+                st.info("Нет данных")
+            else:
+                # Мягкая минималистичная палитра
+                status_colors = {
+                    "Едет": "#10b981",
+                    "Стоит": "#3b82f6",
+                    "Холостой ход": "#f59e0b",
+                    "Нет координат": "#9ca3af",
+                    "Не в сети": "#ef4444"
+                }
+                colors = [status_colors.get(lbl, "#CCCCCC") for lbl in labels]
 
-with col_center:
-    with st.container(border=True):
-        section_title("Водительские удостоверения")
-        try:
-            employees_data = load_employees(api_key)
-            employees = employees_data.get("list", [])
-        except Exception as e:
-            st.error(f"Ошибка: {e}")
-            employees = []
-        
-        if not employees:
-            st.warning("⚠️ Данные отсутствуют - заполните раздел Водители")
-        else:
-            vu_stats, vu_details = process_driver_licenses(employees)
-            draw_status_card(vu_stats, vu_details)
+                fig = go.Figure(go.Pie(
+                    labels=labels,
+                    values=values,
+                    hole=0.55,
+                    marker=dict(colors=colors),
+                    sort=False,
+                    textinfo='percent',
+                    hoverinfo='label+value+percent',
+                    hovertemplate='%{label}: %{value} устройств (%{percent})<extra></extra>'
+                ))
 
-with col_right:
-    with st.container(border=True):
-        section_title("Страховка")
-        try:
-            vehicles_data = load_vehicles(api_key)
-            vehicles = vehicles_data.get("list", [])
-        except Exception as e:
-            st.error(f"Ошибка: {e}")
-            vehicles = []
+                total = sum(values)
+                fleet_total = total
+                fig.update_traces(textposition='inside', insidetextorientation='radial', pull=[0.02]*len(labels))
+                fig.update_layout(
+                    showlegend=False,
+                    margin=dict(t=20, b=10, l=10, r=10),
+                    height=320,
+                    annotations=[dict(
+                        text=f"Всего<br><b>{total}</b>",
+                        x=0.5, y=0.5,
+                        font=dict(size=20, color='#333'),
+                        showarrow=False
+                    )]
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        if not vehicles:
-            st.warning("⚠️ Данные отсутствуют - заполните раздел Транспорт")
-        else:
-            insurance_stats, insurance_details = process_insurance(vehicles)
-            draw_status_card(insurance_stats, insurance_details)
+elif selected_tab == "Идеи":
+    ic1, ic2, ic3 = st.columns(3)
+
+    # 2. Водительские удостоверения (Ideas - Col 1)
+    with ic1:
+        with st.container(border=True):
+            section_title("Водительские удостоверения")
+            try:
+                employees_data = load_employees(api_key)
+                employees = employees_data.get("list", [])
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+                employees = []
+            
+            if not employees:
+                st.warning("⚠️ Данные отсутствуют - заполните раздел Водители")
+            else:
+                vu_stats, vu_details = process_driver_licenses(employees)
+                draw_status_card(vu_stats, vu_details)
+
+    # 3. Страховка (Ideas - Col 2)
+    with ic2:
+        with st.container(border=True):
+            section_title("Страховка")
+            try:
+                vehicles_data = load_vehicles(api_key)
+                vehicles = vehicles_data.get("list", [])
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+                vehicles = []
+
+            if not vehicles:
+                st.warning("⚠️ Данные отсутствуют - заполните раздел Транспорт")
+            else:
+                insurance_stats, insurance_details = process_insurance(vehicles)
+                draw_status_card(insurance_stats, insurance_details)
 
 
 # === БЛОК 2: Тяжелые данные (Поездки) ===
-
-# Контейнер для метрик, чтобы они появились после загрузки
-metrics_container = st.container()
 
 # Функция для расчета дат с учетом таймзоны
 def get_day_range_ts(date_obj, tz_name="Europe/Moscow"):
@@ -495,24 +594,22 @@ else:
     trend_text = "0"
 
 
-# === Вывод метрик ===
-st.write("")  # Добавляем пространство
+# === Вывод метрик (Main) ===
+if selected_tab == "Основная":
+    st.write("")  # Добавляем пространство
 
-with metrics_container:
-    col_a, col_b, col_c = st.columns([1, 1, 1])
-    
-    with col_a:
+    with mc2:
         with st.container(border=True):
             section_title("Активность за период")
             st.metric(
                 label="Активных ТС (вчера)",
-                value=f"{active_count} / {len(trackers)}",
+                value=f"{active_count} из {len(trackers)}",
                 delta=trend_text,
                 help="Количество транспортных средств, совершивших поездки"
             )
             st.caption(trend)
 
-    with col_b:
+    with mc3:
         with st.container(border=True):
             section_title("Пробег и движение")
             st.metric(
@@ -523,7 +620,78 @@ with metrics_container:
             st.caption(f"⏱️ Среднее время в пути: **{avg_drive_time}**")
             st.caption(f"📏 Средний пробег на авто: **{avg_mileage:.1f} км**")
 
-    with col_c:
+    # === График по неделям (Main Tab) ===
+    st.write("")
+    st.write("")
+    
+    with st.container(border=True):
+        section_title("Динамика пробега (Неделя к неделе)")
+        
+        with st.spinner("Загрузка данных за 2 недели..."):
+            weekly_data = load_weekly_mileage(api_key, tracker_ids)
+            
+        if "error" in weekly_data:
+            st.error(f"Ошибка загрузки графика: {weekly_data['error']}")
+        else:
+            days_labels = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            
+            p_data = weekly_data["prev"]
+            c_data = weekly_data["curr"]
+            p_start = weekly_data["dates"]["prev_start"]
+            c_start = weekly_data["dates"]["curr_start"]
+            
+            today_date = datetime.now(ZoneInfo("Europe/Moscow")).date()
+            
+            p_vals, p_dates = [], []
+            c_vals, c_dates = [], []
+            
+            for i in range(7):
+                # Prev
+                d_p = p_start + timedelta(days=i)
+                p_vals.append(p_data.get(d_p.strftime("%Y-%m-%d"), 0))
+                p_dates.append(d_p.strftime("%d.%m"))
+                
+                # Curr
+                d_c = c_start + timedelta(days=i)
+                if d_c > today_date:
+                    c_vals.append(None)
+                else:
+                    c_vals.append(c_data.get(d_c.strftime("%Y-%m-%d"), 0))
+                c_dates.append(d_c.strftime("%d.%m"))
+            
+            # Подготовка подписей (скрываем нули и None)
+            p_text = [f"{v:.0f}" if v and v > 1 else "" for v in p_vals]
+            c_text = [f"{v:.0f}" if v and v > 1 else "" for v in c_vals]
+
+            fig_w = go.Figure()
+            fig_w.add_trace(go.Bar(
+                x=days_labels, y=p_vals, name="Прошлая неделя",
+                marker_color='#9ca3af', hovertemplate='%{y:.1f} км<br>(%{customdata})<extra></extra>',
+                customdata=p_dates,
+                text=p_text,
+                textposition='auto'
+            ))
+            fig_w.add_trace(go.Bar(
+                x=days_labels, y=c_vals, name="Текущая неделя",
+                marker_color='#3b82f6', hovertemplate='%{y:.1f} км<br>(%{customdata})<extra></extra>',
+                customdata=c_dates,
+                text=c_text,
+                textposition='auto'
+            ))
+            
+            fig_w.update_layout(
+                barmode='group',
+                margin=dict(t=20, b=10, l=10, r=10),
+                height=350,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                yaxis=dict(title="Км"),
+                xaxis=dict(title="")
+            )
+            st.plotly_chart(fig_w, use_container_width=True, config={"displayModeBar": False})
+
+# === Вывод метрик (Ideas) ===
+elif selected_tab == "Идеи":
+    with ic3:
         with st.container(border=True):
             section_title("Холостой ход")
             st.metric(
@@ -532,172 +700,172 @@ with metrics_container:
                 help="Время работы двигателя без движения"
             )
 
-# === БЛОК 3: Топливо (Отчеты) ===
+    # === БЛОК 3: Топливо (Отчеты) ===
 
-# Загружаем данные по топливу
-fuel_container = st.container()
+    # Загружаем данные по топливу
+    st.write("")
+    fuel_container = st.container()
 
-with st.spinner("Загрузка данных по топливу..."):
-    # Даты для вчера и позавчера
-    f_start_y, f_end_y = get_day_range_ts(yesterday)
-    f_start_db, f_end_db = get_day_range_ts(day_before)
-    
-    # Проверка на наличие активных трекеров
-    if not active_tracker_ids:
-        fuel_report_y = None
-        fuel_report_db = None
-    else:
-        # Запускаем параллельно
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_y = executor.submit(load_fuel_data, api_key, active_tracker_ids, f_start_y, f_end_y)
-            future_db = executor.submit(load_fuel_data, api_key, active_tracker_ids, f_start_db, f_end_db)
-            
-            fuel_data_y = future_y.result()
-            fuel_data_db = future_db.result()
+    with st.spinner("Загрузка данных по топливу..."):
+        # Даты для вчера и позавчера
+        f_start_y, f_end_y = get_day_range_ts(yesterday)
+        f_start_db, f_end_db = get_day_range_ts(day_before)
         
-        # Проверяем ошибки (хотя бы за вчера должно загрузиться)
-        if "error" in fuel_data_y:
-            st.error(f"Ошибка загрузки топлива: {fuel_data_y['error']}")
+        # Проверка на наличие активных трекеров
+        if not active_tracker_ids:
             fuel_report_y = None
-        else:
-            fuel_report_y = fuel_data_y
-
-        if "error" in fuel_data_db:
-            # Не критично, просто не будет тренда
             fuel_report_db = None
         else:
-            fuel_report_db = fuel_data_db
-
-if fuel_report_y and fuel_report_y.get("success"):
-    try:
-        # Функция парсинга
-        def parse_fuel_report(rep):
-            if not rep or not rep.get("success"):
-                return {}
-            try:
-                sheet = rep["report"]["sheets"][0]
-                section = sheet["sections"][0]
-                data_block = section["data"][0]
-                total_row = data_block.get("total", {})
+            # Запускаем параллельно
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_y = executor.submit(load_fuel_data, api_key, active_tracker_ids, f_start_y, f_end_y)
+                future_db = executor.submit(load_fuel_data, api_key, active_tracker_ids, f_start_db, f_end_db)
                 
-                def get_val(obj, key):
-                    item = obj.get(key, {})
-                    return item.get("raw", 0) if isinstance(item.get("raw"), (int, float)) else 0
-                
-                return {
-                    "fillings_count": get_val(total_row, "fillingsCount"),
-                    "fillings_vol": get_val(total_row, "fillingsVolume"),
-                    "drains_count": get_val(total_row, "drainsCount"),
-                    "drains_vol": get_val(total_row, "drainsVolume"),
-                    "consumed": get_val(total_row, "consumed")
-                }
-            except:
-                return {}
-
-        data_y = parse_fuel_report(fuel_report_y)
-        data_db = parse_fuel_report(fuel_report_db)
-        
-        # Данные за вчера
-        fillings_vol = data_y.get("fillings_vol", 0)
-        fillings_count = data_y.get("fillings_count", 0)
-        drains_vol = data_y.get("drains_vol", 0)
-        drains_count = data_y.get("drains_count", 0)
-        consumed = data_y.get("consumed", 0)
-        
-        # Helper for trend formatting
-        def fmt_trend(val, suffix=""):
-            if abs(val) < 0.1:
-                return None 
-            return f"{val:+.1f}{suffix}"
-
-        # Тренд (Вчера - Позавчера)
-        if data_db:
-            # Заправлено
-            fillings_vol_db = data_db.get("fillings_vol", 0)
-            trend_val = fillings_vol - fillings_vol_db
-            trend_str = fmt_trend(trend_val, " л")
+                fuel_data_y = future_y.result()
+                fuel_data_db = future_db.result()
             
-            # Потрачено
-            consumed_db = data_db.get("consumed", 0)
-            consumed_trend_val = consumed - consumed_db
-            consumed_trend_str = fmt_trend(consumed_trend_val, " л")
-            
-            # Слито
-            drains_vol_db = data_db.get("drains_vol", 0)
-            drains_trend_val = drains_vol - drains_vol_db
-            drains_trend_str = fmt_trend(drains_trend_val, " л")
-            
-            # Процент потерь
-            if fillings_vol_db > 0:
-                loss_pct_db = (drains_vol_db / fillings_vol_db) * 100
+            # Проверяем ошибки (хотя бы за вчера должно загрузиться)
+            if "error" in fuel_data_y:
+                st.error(f"Ошибка загрузки топлива: {fuel_data_y['error']}")
+                fuel_report_y = None
             else:
-                loss_pct_db = 0
-            
-            # Расчет потерь за вчера (нужен для тренда)
-            if fillings_vol > 0:
-                loss_pct = (drains_vol / fillings_vol) * 100
-            else:
-                loss_pct = 0
+                fuel_report_y = fuel_data_y
 
-            loss_pct_trend_val = loss_pct - loss_pct_db
-            loss_pct_trend_str = fmt_trend(loss_pct_trend_val, "%")
-            
-        else:
-            trend_str = None
-            consumed_trend_str = None
-            drains_trend_str = None
-            loss_pct_trend_str = None
-            
-            # Расчет потерь за вчера (если нет данных за позавчера, все равно нужно посчитать для текущего дня)
-            if fillings_vol > 0:
-                loss_pct = (drains_vol / fillings_vol) * 100
+            if "error" in fuel_data_db:
+                # Не критично, просто не будет тренда
+                fuel_report_db = None
             else:
-                loss_pct = 0
-            
-        # Визуализация
-        with fuel_container:
-            st.write("")  # Добавляем пространство
-            
-            with st.container(border=True):
-                section_title("Топливо (Вчера)")
-                
-                # Поле для ввода цены топлива
-                fuel_price = st.number_input(
-                    "Цена топлива (₽/литр)",
-                    min_value=0.0,
-                    max_value=200.0,
-                    value=63.0,
-                    step=0.5,
-                    help="Введите актуальную цену топлива для расчета финансовых показателей",
-                    key="fuel_price_input"
-                )
-                
-                # Пересчет стоимости на основе введенной цены
-                fillings_cost = fillings_vol * fuel_price
-                consumed_cost = consumed * fuel_price
-                drains_cost = drains_vol * fuel_price
-                
-                st.write("")  # Пространство перед метриками
-                
-                c1, c2, c3, c4 = st.columns(4)
-                
-                with c1:
-                    st.metric("Заправлено", f"{fillings_vol:.1f} л", delta=trend_str, help="Сравнение с позавчерашним днем")
-                    st.caption(f"💰 {fillings_cost:,.0f} ₽")
-                    st.caption(f"⛽ Заправок: {fillings_count}")
-                    
-                with c2:
-                    st.metric("Потрачено", f"{consumed:.1f} л", delta=consumed_trend_str, help="Сравнение с позавчерашним днем")
-                    st.caption(f"💰 {consumed_cost:,.0f} ₽")
-                    
-                with c3:
-                    st.metric("Слито (Потери)", f"{drains_vol:.1f} л", delta=drains_trend_str, delta_color="inverse", help="Сравнение с позавчерашним днем")
-                    st.caption(f"💰 {drains_cost:,.0f} ₽")
-                    st.caption(f"🚨 Сливов: {drains_count}")
-                    
-                with c4:
-                    st.metric("Процент потерь", f"{loss_pct:.1f}%", delta=loss_pct_trend_str, delta_color="inverse", help="Отношение объема сливов к объему заправок")
+                fuel_report_db = fuel_data_db
 
+    if fuel_report_y and fuel_report_y.get("success"):
+        try:
+            # Функция парсинга
+            def parse_fuel_report(rep):
+                if not rep or not rep.get("success"):
+                    return {}
+                try:
+                    sheet = rep["report"]["sheets"][0]
+                    section = sheet["sections"][0]
+                    data_block = section["data"][0]
+                    total_row = data_block.get("total", {})
+                    
+                    def get_val(obj, key):
+                        item = obj.get(key, {})
+                        return item.get("raw", 0) if isinstance(item.get("raw"), (int, float)) else 0
+                    
+                    return {
+                        "fillings_count": get_val(total_row, "fillingsCount"),
+                        "fillings_vol": get_val(total_row, "fillingsVolume"),
+                        "drains_count": get_val(total_row, "drainsCount"),
+                        "drains_vol": get_val(total_row, "drainsVolume"),
+                        "consumed": get_val(total_row, "consumed")
+                    }
+                except:
+                    return {}
+
+            data_y = parse_fuel_report(fuel_report_y)
+            data_db = parse_fuel_report(fuel_report_db)
+            
+            # Данные за вчера
+            fillings_vol = data_y.get("fillings_vol", 0)
+            fillings_count = data_y.get("fillings_count", 0)
+            drains_vol = data_y.get("drains_vol", 0)
+            drains_count = data_y.get("drains_count", 0)
+            consumed = data_y.get("consumed", 0)
+            
+            # Helper for trend formatting
+            def fmt_trend(val, suffix=""):
+                if abs(val) < 0.1:
+                    return None 
+                return f"{val:+.1f}{suffix}"
+
+            # Тренд (Вчера - Позавчера)
+            if data_db:
+                # Заправлено
+                fillings_vol_db = data_db.get("fillings_vol", 0)
+                trend_val = fillings_vol - fillings_vol_db
+                trend_str = fmt_trend(trend_val, " л")
                 
-    except Exception as e:
-        st.error(f"Ошибка обработки отчета: {e}")
+                # Потрачено
+                consumed_db = data_db.get("consumed", 0)
+                consumed_trend_val = consumed - consumed_db
+                consumed_trend_str = fmt_trend(consumed_trend_val, " л")
+                
+                # Слито
+                drains_vol_db = data_db.get("drains_vol", 0)
+                drains_trend_val = drains_vol - drains_vol_db
+                drains_trend_str = fmt_trend(drains_trend_val, " л")
+                
+                # Процент потерь
+                if fillings_vol_db > 0:
+                    loss_pct_db = (drains_vol_db / fillings_vol_db) * 100
+                else:
+                    loss_pct_db = 0
+                
+                # Расчет потерь за вчера (нужен для тренда)
+                if fillings_vol > 0:
+                    loss_pct = (drains_vol / fillings_vol) * 100
+                else:
+                    loss_pct = 0
+
+                loss_pct_trend_val = loss_pct - loss_pct_db
+                loss_pct_trend_str = fmt_trend(loss_pct_trend_val, "%")
+                
+            else:
+                trend_str = None
+                consumed_trend_str = None
+                drains_trend_str = None
+                loss_pct_trend_str = None
+                
+                # Расчет потерь за вчера (если нет данных за позавчера, все равно нужно посчитать для текущего дня)
+                if fillings_vol > 0:
+                    loss_pct = (drains_vol / fillings_vol) * 100
+                else:
+                    loss_pct = 0
+                
+            # Визуализация
+            with fuel_container:
+                st.write("")  # Добавляем пространство
+                
+                with st.container(border=True):
+                    section_title("Топливо (Вчера)")
+                    
+                    # Поле для ввода цены топлива
+                    fuel_price = st.number_input(
+                        "Цена топлива (₽/литр)",
+                        min_value=0.0,
+                        max_value=200.0,
+                        value=63.0,
+                        step=0.5,
+                        help="Введите актуальную цену топлива для расчета финансовых показателей",
+                        key="fuel_price_input"
+                    )
+                    
+                    # Пересчет стоимости на основе введенной цены
+                    fillings_cost = fillings_vol * fuel_price
+                    consumed_cost = consumed * fuel_price
+                    drains_cost = drains_vol * fuel_price
+                    
+                    st.write("")  # Пространство перед метриками
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    
+                    with c1:
+                        st.metric("Заправлено", f"{fillings_vol:.1f} л", delta=trend_str, help="Сравнение с позавчерашним днем")
+                        st.caption(f"💰 {fillings_cost:,.0f} ₽")
+                        st.caption(f"⛽ Заправок: {fillings_count}")
+                        
+                    with c2:
+                        st.metric("Потрачено", f"{consumed:.1f} л", delta=consumed_trend_str, help="Сравнение с позавчерашним днем")
+                        st.caption(f"💰 {consumed_cost:,.0f} ₽")
+                        
+                    with c3:
+                        st.metric("Слито (Потери)", f"{drains_vol:.1f} л", delta=drains_trend_str, delta_color="inverse", help="Сравнение с позавчерашним днем")
+                        st.caption(f"💰 {drains_cost:,.0f} ₽")
+                        st.caption(f"🚨 Сливов: {drains_count}")
+                        
+                    with c4:
+                        st.metric("Процент потерь", f"{loss_pct:.1f}%", delta=loss_pct_trend_str, delta_color="inverse", help="Отношение объема сливов к объему заправок")
+    
+        except Exception as e:
+            st.error(f"Ошибка обработки отчета: {e}")
